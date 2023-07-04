@@ -55,7 +55,7 @@
 #define SCL_Pin PB6
 #endif
 
-#define SOFT_STANDARD 27
+#define SOFT_STANDARD 5
 #define SOFT_FAST 0
 
 //#define FULL_SPEED_I2C

@@ -134,7 +134,7 @@ class bq769x0 {
     int adcGain;    // uV/LSB
     int adcOffset;  // mV
     
-    int errorStatus ;
+//    int errorStatus ;
     bool autoBalancingEnabled ;
     bool balancingActive ;
     int balancingMinIdleTime_s ;    // default: 30 minutes
@@ -151,6 +151,8 @@ class bq769x0 {
 		void updateTemperatures(void);
 		byte updateBalancingSwitches(void);
 		int readRegister(byte address);
+		uint8_t bq769x0_read_byte(uint8_t reg_addr);
+		int32_t bq769x0_read_word(uint8_t reg_addr);
 		void writeRegister(byte address, int data);
 };
 

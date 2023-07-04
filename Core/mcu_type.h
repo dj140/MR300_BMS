@@ -24,8 +24,8 @@
 #define __MCU_TYPE
 
 //*************** BASIC ***************//
-#include "gd32e10x.h"
-//#include "gd32f10x_conf.h"
+#include "stm32f10x.h"
+#include "stm32f10x_conf.h"
 
 typedef enum{
     F_CPU_16MHz,

@@ -65,7 +65,22 @@ uint8_t _crc8_ccitt_update (uint8_t inCrc, uint8_t inData)
 
   return data;
 }
+static const uint8_t crc8_ccitt_small_table[16] = {
+	0x00, 0x07, 0x0e, 0x09, 0x1c, 0x1b, 0x12, 0x15,
+	0x38, 0x3f, 0x36, 0x31, 0x24, 0x23, 0x2a, 0x2d
+};
+uint8_t crc8_ccitt(uint8_t val, const uint8_t *buf, size_t cnt)
+{
+	size_t i;
+	const uint8_t *p = buf;
 
+	for (i = 0; i < cnt; i++) {
+		val ^= p[i];
+		val = (val << 4) ^ crc8_ccitt_small_table[val >> 4];
+		val = (val << 4) ^ crc8_ccitt_small_table[val >> 4];
+	}
+	return val;
+}
 //----------------------------------------------------------------------------
 
 bq769x0::bq769x0(byte bqType, int bqI2CAddress)
@@ -112,7 +127,7 @@ int bq769x0::begin(byte alertPin, byte bootPin)
   }
       
 
-  if (1)
+  if (determineAddressAndCrc())
   {
     LOG_PRINTLN("Address and CRC detection successful");
     LOG_PRINT("Address: ");
@@ -140,10 +155,10 @@ int bq769x0::begin(byte alertPin, byte bootPin)
     attachInterrupt(digitalPinToInterrupt(alertPin), bq769x0::alertISR, RISING);
 
     // get ADC offset and gain
-    adcOffset = (signed int) readRegister(ADCOFFSET);  // convert from 2's complement
+    adcOffset = (signed int) bq769x0_read_byte(ADCOFFSET);  // convert from 2's complement
 		LOG_PRINT("adcOffset read:");
 		LOG_PRINTLN(adcOffset);
-    adcGain = 365 + (((readRegister(ADCGAIN1) & B00001100) << 1) | ((readRegister(ADCGAIN2) & B11100000) >> 5)); // uV/LSB
+    adcGain = 365 + (((bq769x0_read_byte(ADCGAIN1) & B00001100) << 1) | ((bq769x0_read_byte(ADCGAIN2) & B11100000) >> 5)); // uV/LSB
     LOG_PRINT("adcGain read:");
 		LOG_PRINTLN(adcGain);
     return 0;
@@ -193,17 +208,22 @@ bool bq769x0::determineAddressAndCrc(void)
 
 int bq769x0::checkStatus()
 {
-   LOG_PRINT("checkStatus: ");
+	    static uint16_t errorStatus = 0;
+
+   LOG_PRINT("checkStatus: ");   
+   	regSYS_STAT_t sys_stat;
+    sys_stat.regByte = readRegister(SYS_STAT);
+	    errorStatus = sys_stat.regByte;
    LOG_PRINTLN(errorStatus);
+	
   if (alertInterruptFlag == false && errorStatus == 0) {
     return 0;
   }
   else {
-    regSYS_STAT_t sys_stat;
-    sys_stat.regByte = readRegister(SYS_STAT);
+
 
     if (sys_stat.bits.CC_READY == 1) {
-      //LOG_PRINTLN("Interrupt: CC ready");
+      LOG_PRINTLN("Interrupt: CC ready");
       updateCurrent(true);  // automatically clears CC ready flag	
     }
     
@@ -284,9 +304,10 @@ int bq769x0::checkStatus()
 void bq769x0::update()
 {
   LOG_PRINTLN("update");
-  updateCurrent();  // will only read new current value if alert was triggered
+//  updateCurrent();  // will only read new current value if alert was triggered
   updateVoltages();
-//  updateTemperatures();
+	checkStatus();
+// updateTemperatures();
   updateBalancingSwitches();
 }
 
@@ -301,13 +322,11 @@ void bq769x0::shutdown()
 }
 bool bq769x0::disableALLMosfet()
 {
-	    byte sys_ctrl2;
-
+	byte sys_ctrl2;
   LOG_PRINTLN("disableALLMosfet");
-	    sys_ctrl2 = readRegister(SYS_CTRL2);
+	sys_ctrl2 = readRegister(SYS_CTRL2);
   writeRegister(SYS_CTRL2, sys_ctrl2 & B01000001);  // switch CHG on
   return true;
-  
 }
 
 
@@ -393,7 +412,7 @@ byte bq769x0::updateBalancingSwitches(void)
     (cellVoltages[idCellMaxVoltage] - cellVoltages[idCellMinVoltage]) > balancingMaxVoltageDifference_mV)
   {
     balancingActive = true;
-    //LOG_PRINTLN("Balancing enabled!");
+    LOG_PRINTLN("Balancing enabled!");
     
 //    regCELLBAL_t cellbal;
     byte balancingFlags;
@@ -401,13 +420,31 @@ byte bq769x0::updateBalancingSwitches(void)
     
     for (int section = 0; section < numberOfSections; section++)
     {
+			 // find cells which should be balanced and sort them by voltage descending
+            int cell_list[5];
+            int cell_counter = 0;
+            for (int i = 0; i < 5; i++) {
+                if  ((cellVoltages[section*5 + i] - cellVoltages[idCellMinVoltage]) > balancingMaxVoltageDifference_mV)
+                {
+                    int j = cell_counter;
+                    while (j > 0
+                           && cellVoltages[section * 5 + cell_list[j - 1]]
+                                  < cellVoltages[section * 5 + i])
+                    {
+                        cell_list[j] = cell_list[j - 1];
+                        j--;
+                    }
+                    cell_list[j] = i;
+                    cell_counter++;
+                }
+        }
       balancingFlags = 0;
-      for (int i = 0; i < 5; i++)
+      for (int i = 0; i < cell_counter; i++)
       {
-        if ((cellVoltages[section*5 + i] - cellVoltages[idCellMinVoltage]) > balancingMaxVoltageDifference_mV) {
+ //       if ((cellVoltages[section*5 + i] - cellVoltages[idCellMinVoltage]) > balancingMaxVoltageDifference_mV) {
           
           // try to enable balancing of current cell
-          balancingFlagsTarget = balancingFlags | (1 << i);
+          balancingFlagsTarget = balancingFlags | (1 << cell_list[i]);
 
           // check if attempting to balance adjacent cells
           bool adjacentCellCollision = 
@@ -417,7 +454,7 @@ byte bq769x0::updateBalancingSwitches(void)
           if (adjacentCellCollision == false) {
             balancingFlags = balancingFlagsTarget;
           }          
-        }
+  //      }
       }
       LOG_PRINT("Setting CELLBAL");
       LOG_PRINT(section+1);
@@ -669,25 +706,50 @@ void bq769x0::updateTemperatures()
   int adcVal = 0;
   int vtsx = 0;
   unsigned long rts = 0;
-  
-  Wire.beginTransmission(I2CAddress);
-  Wire.write(0x2C);
-  Wire.endTransmission();
-  
-  if (Wire.requestFrom(I2CAddress, 2) == 2)
-  {
-    // calculate R_thermistor according to bq769x0 datasheet
-    adcVal = ((Wire.read() & B00111111) << 8) | Wire.read();
-    vtsx = adcVal * 0.382; // mV
-    rts = 10000.0 * vtsx / (3300.0 - vtsx); // Ohm
-        
-    // Temperature calculation using Beta equation
-    // - According to bq769x0 datasheet, only 10k thermistors should be used
-    // - 25°C reference temperature for Beta equation assumed
-    tmp = 1.0/(1.0/(273.15+25) + 1.0/thermistorBetaValue*log(rts/10000.0)); // K
-    
-    temperatures[0] = (tmp - 273.15) * 10.0;
-  }
+
+	adcVal = (bq769x0_read_byte(TS1_HI_BYTE) & 0b00111111) << 8
+						| bq769x0_read_byte(TS1_LO_BYTE);
+	vtsx = adcVal * 0.382; // mV
+	rts = 10000.0 * vtsx / (3300 - vtsx); // Ohm
+	// Temperature calculation using Beta equation
+	// - According to bq769x0 datasheet, only 10k thermistors should be used
+	// - 25°C reference temperature for Beta equation assumed
+	tmp = 1.0/(1.0/(273.15+25) + 1.0/thermistorBetaValue*log(rts/10000.0)); // K
+	temperatures[0] = (tmp - 273.15);
+	LOG_PRINT("--adc1:");
+	LOG_PRINT(adcVal);
+	LOG_PRINT("   --rts1:");
+	LOG_PRINT(rts);
+	LOG_PRINTLN("------------------------");
+
+	adcVal = (bq769x0_read_byte(TS2_HI_BYTE) & 0b00111111) << 8
+								| bq769x0_read_byte(TS2_LO_BYTE);
+	vtsx = adcVal * 0.382;                 // mV
+	rts = 10000.0 * vtsx / (3300.0 - vtsx); // Ohm
+	tmp = 1.0 / (1.0 / (273.15 + 25) + 1.0 / thermistorBetaValue * log(rts / 10000.0)); // K
+	temperatures[1] = (tmp - 273.15);
+	LOG_PRINT("--tmp2:");
+	LOG_PRINT(adcVal);
+	LOG_PRINT("   --rts2:");
+	LOG_PRINT(rts);
+	LOG_PRINTLN("------------------------");
+		
+	adcVal = (bq769x0_read_byte(TS3_HI_BYTE) & 0b00111111) << 8
+								| bq769x0_read_byte(TS3_LO_BYTE);
+	vtsx = adcVal * 0.382;                 // mV
+	rts = 10000.0 * vtsx / (3300.0 - vtsx); // Ohm
+	tmp = 1.0 / (1.0 / (273.15 + 25) + 1.0 / thermistorBetaValue * log(rts / 10000.0)); // K
+	temperatures[2] = (tmp - 273.15);
+	LOG_PRINT("--tmp3:");
+	LOG_PRINT(adcVal);
+	LOG_PRINT("   --rts3:");
+	LOG_PRINT(rts);
+	LOG_PRINTLN("------------------------");
+	
+	LOG_PRINTLN(temperatures[0]);
+	LOG_PRINTLN(temperatures[1]);
+	LOG_PRINTLN(temperatures[2]);
+
 }
 
 
@@ -704,9 +766,20 @@ void bq769x0::updateCurrent(bool ignoreCCReadyFlag)
   
   if (ignoreCCReadyFlag == true || sys_stat.bits.CC_READY == 1)
   {
-    adcVal = (readRegister(0x32) << 8) | readRegister(0x33);
+//		adcVal = bq769x0_read_word(CC_HI_BYTE);
+		adcVal = (readRegister(0x32) << 8) | readRegister(0x33);
+		LOG_PRINT("--current_adc:");
+		LOG_PRINTLN(adcVal);
+		if (adcVal < 0) {
+//				LOG_PRINTLN("Error reading current measurement");
+				return;
+		}
+//    adcVal = (readRegister(0x32) << 8) | readRegister(0x33);
     batCurrent = adcVal * 8.44 / shuntResistorValue_mOhm;  // mA
+		LOG_PRINT("--batCurrent:");
+		LOG_PRINTLN(batCurrent);
 
+        // remove noise around 0 A
     if (batCurrent > -10 && batCurrent < 10)
     {
       batCurrent = 0;
@@ -737,18 +810,14 @@ void bq769x0::updateVoltages()
   LOG_PRINTLN("updateVoltages");
 	LOG_PRINTLN("------------------------");
   long adcVal = 0;
-  char buf[4];
   int connectedCells = 0;
   idCellMaxVoltage = 0; //resets to zero before writing values to these vars
   idCellMinVoltage = 0;
+  float sum_voltages = 0;
 
-  uint8_t crc;
-  crc = 0;
-  buf[0] = (char) VC1_HI_BYTE; // start with the first cell
-  
-  Wire.beginTransmission(I2CAddress);
-  Wire.write(buf[0]);     // tell slave that this is the address it is interested in
-  Wire.endTransmission(); // end transmission so that read can begin
+//    adcOffset = (signed int) bq769x0_read_byte(ADCOFFSET);  // convert from 2's complement
+//		LOG_PRINT("adcOffset read:");
+//			LOG_PRINTLN(adcOffset);
 
   /****************************************************\
     Note that each cell voltage is 14 bits stored across two 8 bit register locations in the BQ769x0 chip.
@@ -759,69 +828,40 @@ void bq769x0::updateVoltages()
     To add the hi and lo readings together, the << is used to shift the hi value over by 8 bits, then adding it to the 8 bits.
     This is done by using the OR operator |. So the total thing looks like: adcVal = (VC_HI_BYTE & 0b00111111) << 8 | VC_LO_BYTE;
   \****************************************************/
+    for (int i = 0; i < numberOfCells; i++) {
+        adcVal = bq769x0_read_word(VC1_HI_BYTE + i * 2) & 0x3FFF;
+        cellVoltages[i] = (adcVal * adcGain * 1e-3F + adcOffset);
 
-  // will run once for each cell up to the total num of cells
-  for (int i = 0; i < numberOfCells; i++) {
-    if (crcEnabled == true) {
-      // refer to datasheet at 10.3.1.4 "Communications Subsystem"
-      Wire.requestFrom(I2CAddress, 4);  // request 4 bytes: 1) VCx_HI - 2) VCx_HI CRC - 3) VCx_LO - 4) VCx_LO CRC
-      buf[0] = Wire.read();             // VCx_HI - note that only bottom 6 bits are good
-      buf[1] = Wire.read();             // VCx_HI CRC - done on address and data
-      buf[2] = Wire.read();             // VCx_LO - all 8 bits are used
-      buf[3] = Wire.read();             // VCx_LO CRC - done on just the data byte
-      
-      // check if CRC matches data bytes
-      // CRC of first byte includes slave address (including R/W bit) and data
-      crc = _crc8_ccitt_update(0, (I2CAddress << 1) | 1);
-      crc = _crc8_ccitt_update(crc, buf[0]);
-      // if (crc != buf[1]){
-      //   LOG_PRINTLN("VCxHI CRC doesn't match");
-      //   return; // to exit without saving corrupted value
-      // }
-        
-      // CRC of subsequent bytes contain only data
-      crc = _crc8_ccitt_update(0, buf[2]);
-      // if (crc != buf[3]) {
-      //   LOG_PRINTLN("VCxLO CRC doesn't match");
-      //   return; // to exit without saving corrupted value
-      // }
-    } 
-
-    // if CRC is disabled only read 2 bytes and call it a day :)
-    else { 
-      Wire.requestFrom(I2CAddress, 2);
-      buf[0] = Wire.read(); // VCx_HI - note that only bottom 6 bits are good
-      buf[2] = Wire.read(); // VCx_LO - all 8 bits are used
-    }
-
-    // combine VCx_HI and VCx_LO bits and calculate cell voltage
-    adcVal = (buf[0] & 0b00111111) << 8 | buf[2];           // read VCx_HI bits and drop the first two bits, shift left then append VCx_LO bits
-    cellVoltages[i] = adcVal * adcGain / 1000 + adcOffset;  // calculate real voltage in mV
-    LOG_PRINT(i+1);
+        if (cellVoltages[i] > 500) {
+            connectedCells++;
+            sum_voltages += cellVoltages[i];
+        }
+        if (cellVoltages[i] > cellVoltages[idCellMaxVoltage]) {
+            idCellMaxVoltage = i;
+        }
+        if (cellVoltages[i] < cellVoltages[idCellMinVoltage] && cellVoltages[i] > 500) {
+            idCellMinVoltage = i;
+        }
+		LOG_PRINT(i+1);
 		LOG_PRINT("--cellVoltages:");
 		LOG_PRINT(cellVoltages[i]);
+//		LOG_PRINT("--adc:");
+//		LOG_PRINT(adcVal);
 		LOG_PRINTLN();
-		
-    // filter out voltage readings from unconnected cell(s)
-    if (cellVoltages[i] > 500) {  
-      connectedCells++; // add one to the temporary cell counter var - only readings above 500mV are counted towards real cell count
     }
+		    // read battery pack voltage
+    adcVal = bq769x0_read_word(BAT_HI_BYTE);
+    batVoltage = (4.0F * adcGain * adcVal * 1e-3F + connectedCells * adcOffset);
+		LOG_PRINT("BatVoltages:");
+		LOG_PRINT(batVoltage);
+		LOG_PRINTLN();
+		LOG_PRINT("Max:");
+		LOG_PRINT(cellVoltages[idCellMaxVoltage]);
+		LOG_PRINT("  Min:");
+		LOG_PRINT(cellVoltages[idCellMinVoltage]);
+		LOG_PRINTLN();
+		LOG_PRINTLN("------------------------");
 
-    if (cellVoltages[i] > cellVoltages[idCellMaxVoltage]) {
-      idCellMaxVoltage = i;
-    }
-
-    if (cellVoltages[i] < cellVoltages[idCellMinVoltage] && cellVoltages[i] > 500) {
-      idCellMinVoltage = i;
-    }
-  }
-  
-  long adcValPack = ((readRegister(BAT_HI_BYTE) << 8) | readRegister(BAT_LO_BYTE)) & 0b1111111111111111;
-  batVoltage = 4 * adcGain * adcValPack / 1000 + (connectedCells * adcOffset); // in original LibreSolar, connectedCells is converted to byte, maybe to reduce bit size
-  LOG_PRINT("BatVoltages:");
-	LOG_PRINT(batVoltage);
-	LOG_PRINTLN();
-	LOG_PRINTLN("------------------------");
 }
 
 //----------------------------------------------------------------------------
@@ -870,6 +910,65 @@ int bq769x0::readRegister(byte address)
   return Wire.read();
 }
 
+uint8_t bq769x0::bq769x0_read_byte(uint8_t reg_addr)
+{
+    uint8_t buf[3];
+
+
+
+    if (crcEnabled) {
+        // CRC is calculated over the slave address (incl. R/W bit) and data
+        buf[0] = (I2CAddress << 1) | 1U;
+        do { 
+					Wire.beginTransmission(I2CAddress);
+  Wire.write(reg_addr);
+  Wire.endTransmission();
+					  Wire.requestFrom(I2CAddress, 2);
+					  buf[1] = Wire.read();
+						buf[2] = Wire.read();
+            //i2c_read(i2c_dev, buf + 1, 2, I2CAddress);
+        } while (crc8_ccitt(0, buf, 2) != buf[2]);
+
+        return buf[1];
+    }
+    else {
+				Wire.requestFrom(I2CAddress, 1);
+        buf[0] = Wire.read();
+        //i2c_read(1, buf, 1, I2CAddress);
+        return buf[0];
+    }
+}
+int32_t bq769x0::bq769x0_read_word(uint8_t reg_addr)
+{
+    uint8_t buf[5];
+
+    // write starting register
+//    i2c_write(i2c_dev, &reg_addr, 1, i2c_address);
+  Wire.beginTransmission(I2CAddress);
+  Wire.write(reg_addr);
+  Wire.endTransmission();
+    if (crcEnabled) {
+        // CRC is calculated over the slave address (incl. R/W bit) and data
+        buf[0] = (I2CAddress << 1) | 1U;
+//        i2c_read(i2c_dev, buf + 1, 4, i2c_address);
+					  Wire.requestFrom(I2CAddress, 4);
+					  buf[1] = Wire.read();
+						 buf[2] = Wire.read();
+						buf[3] = Wire.read();
+						 buf[4] = Wire.read();
+        if (crc8_ccitt(0, buf, 2) != buf[2]) {
+            return -1;
+        }
+
+        // CRC of subsequent bytes only considering data
+        if (crc8_ccitt(0, buf + 3, 1) != buf[4]) {
+            return -1;
+        }
+
+        return buf[1] << 8 | buf[3];
+    }
+
+}
 //----------------------------------------------------------------------------
 // supports CRC, taken from mbed version of LibreSolar firmware
 // however often freeze momentarily at "while (crc != buf[1]);"

@@ -16,14 +16,15 @@ static void ButtonEvent_Handler(ButtonEvent* btn, int event)
         if(event == ButtonEvent::EVENT_ButtonLongPressed)
         {
 //					 digitalWrite(Power_Pin, LOW);
-//					 mtm.TaskStateCtrl(TP_InfoLED, 0);
+					 mtm.TaskStateCtrl(TP_InfoLED, 0);
+			  	 digitalWrite(Power_Pin, LOW);
 	         BMS.disableALLMosfet();
-				//	 BMS.shutdown();
-//					 Serial.println("power off");
+					 BMS.shutdown();
+					 Serial.println("power off");
         }
         if(event == ButtonEvent::EVENT_ButtonDoubleClick)
         {
-					digitalWrite(LED_Pin, LOW);
+//					digitalWrite(LED_Pin, LOW);
 //           mtm.TaskStateCtrl(TP_InfoLED, 0);
 //	         BMS.disableALLMosfet();
 //					 BMS.shutdown();

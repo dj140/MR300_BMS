@@ -257,4 +257,3 @@
 * 1.去除FileGroup.h
 * 2.GPIO快速操作宏定义函数从mcu_type.h转移到gpio.h和Arduino.h
 * 3.__STM32__宏定义从Arduino.h转移到mcu_type.h
-# MR300_BMS
